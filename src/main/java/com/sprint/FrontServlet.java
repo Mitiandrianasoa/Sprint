@@ -1,22 +1,28 @@
 package com.sprint;
 
 import java.io.IOException;
-import java.io.PrintWriter;
-
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.RequestDispatcher;
 
 public class FrontServlet extends HttpServlet {
     
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) 
-            throws ServletException, IOException {
-        
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        charResource(req, resp);
+    }
+    
+    private void RechercheResource(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
         String path = req.getRequestURI().substring(req.getContextPath().length());
-        resp.setContentType("text/plain");
-        PrintWriter out = resp.getWriter();
-        out.print("sprint: "+ path);
+        boolean resourceExists = getServletContext().getResource(path) != null;
+        
+        if (resourceExists) {
+            RequestDispatcher defaultHandler = getServletContext().getNamedDispatcher("default");
+            defaultHandler.forward(req, resp);
+        } else {
+            resp.getWriter().println(path);
+        }
     }
 }
