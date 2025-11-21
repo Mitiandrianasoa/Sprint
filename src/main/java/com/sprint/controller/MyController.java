@@ -3,6 +3,7 @@ package com.sprint.controller;
 import java.io.IOException;
 
 import com.sprint.annotation.Test;
+import com.sprint.model.*;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -19,4 +20,9 @@ public class MyController {
         resp.setContentType("text/plain;charset=UTF-8");
         resp.getWriter().write("Greetings from greet()");
     }
+
+    @Test("/page")
+public ModelView page() {
+    return new ModelView("page"); // Détecté comme ModelView
+}
 }
