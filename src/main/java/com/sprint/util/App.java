@@ -1,4 +1,4 @@
-package com.sprint;
+package com.sprint.uti;
 
 /**
  * Hello world!

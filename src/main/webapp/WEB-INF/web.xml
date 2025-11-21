@@ -7,7 +7,7 @@
     
     <servlet>
         <servlet-name>FrontServlet</servlet-name>
-        <servlet-class>com.sprint.FrontServlet</servlet-class>
+        <servlet-class>com.sprint.servlet.FrontServlet</servlet-class>
     </servlet>
     
     <servlet-mapping>
