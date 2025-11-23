@@ -16,6 +16,7 @@ public class PathPattern {
         this.pattern = pattern;
         this.parameterNames = new ArrayList<>();
         this.regexPattern = compilePattern(pattern);
+        extractParameterNames(pattern); // Ajout de l'appel manquant
     }
 
     private Pattern compilePattern(String pattern) {
