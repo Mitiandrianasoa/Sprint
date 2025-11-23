@@ -29,10 +29,8 @@ public class FrontServlet extends HttpServlet {
         listerAnnotations();
     }
     
-    
     private void initialiserRoutes() throws ServletException {
         try {
-            // Scanner les contrôleurs
             List<Class<?>> controllerClasses = PackageScanner.getClasses("com.sprint.controller");
             
             for (Class<?> controllerClass : controllerClasses) {
@@ -41,14 +39,13 @@ public class FrontServlet extends HttpServlet {
                 
                 System.out.println("Initialisation du contrôleur: " + controllerName);
                 
-                // Parcourir les méthodes du contrôleur
                 for (Method method : controllerClass.getDeclaredMethods()) {
                     Test testAnnotation = method.getAnnotation(Test.class);
                     if (testAnnotation != null) {
                         String path = testAnnotation.value();
                         routeMap.put(path, method);
                         pathPatterns.put(path, new PathPattern(path));
-                        controllerInstances.put(path, controllerInstance);
+                        controllerInstances.put(method, controllerInstance);
                         System.out.println("Route enregistrée: " + path + " -> " + 
                             controllerName + "." + method.getName());
                     }
@@ -58,7 +55,7 @@ public class FrontServlet extends HttpServlet {
             throw new ServletException("Erreur lors de l'initialisation des routes", e);
         }
     }
-
+    
     private void enregistrerRoute(Annotation annotation, Class<?> annotationClass, Method method, 
                                 Object controllerInstance, String controllerName) {
         try {
@@ -135,15 +132,20 @@ public class FrontServlet extends HttpServlet {
     }
     
     private boolean executerRoute(String path, HttpServletRequest req, HttpServletResponse resp) {
-        Method method = routeMap.get(path);
-        Object controller = controllerInstances.get(path);
-        
-        if (method != null && controller != null) {
+        Method method = trouverMethode(path);
+        if (method != null) {
             try {
                 method.setAccessible(true);
+                Object controller = controllerInstances.get(method);
+                
+                // Extraire les paramètres du chemin
+                Map<String, String> pathParams = extraireParametres(path);
+                
+                // Préparer les arguments pour la méthode
+                Object[] args = prepareMethodArguments(method, req, resp, pathParams);
                 
                 // Appel de la méthode du contrôleur
-                Object result = method.invoke(controller, getParametresMethode(method, req, resp));
+                Object result = method.invoke(controller, args);
                 
                 // Traitement du résultat
                 traiterResultat(result, req, resp);
@@ -185,6 +187,23 @@ public class FrontServlet extends HttpServlet {
         }
         // Ajoutez d'autres types de retours si nécessaire
     }
+
+    private Object convertToType(String value, Class<?> targetType) {
+        if (value == null) return null;
+        
+        try {
+            if (targetType == String.class) return value;
+            if (targetType == Integer.class || targetType == int.class) 
+                return Integer.parseInt(value);
+            if (targetType == Long.class || targetType == long.class) 
+                return Long.parseLong(value);
+            // Ajoutez d'autres conversions au besoin
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Impossible de convertir la valeur en " + 
+                                            targetType.getSimpleName(), e);
+        }
+        return value;
+    }
     
     private void gererErreur(Exception e, HttpServletResponse resp) {
         try {
@@ -216,32 +235,7 @@ public class FrontServlet extends HttpServlet {
         return Collections.emptyMap();
     }
 
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) 
-            throws ServletException, IOException {
-        String path = req.getRequestURI().substring(req.getContextPath().length());
-        
-        Method method = trouverMethode(path);
-        if (method != null) {
-            try {
-                // Extraire les paramètres du chemin
-                Map<String, String> pathParams = extraireParametres(path);
-                
-                // Préparer les arguments pour la méthode
-                Object[] args = prepareMethodArguments(method, req, resp, pathParams);
-                
-                // Appeler la méthode du contrôleur
-                Object result = method.invoke(controllerInstances.get(method.getDeclaringClass().getName()), args);
-                
-                // Traiter le résultat
-                traiterResultat(result, req, resp);
-                
-            } catch (Exception e) {
-                gererErreur(e, resp);
-            }
-        } else {
-            resp.sendError(HttpServletResponse.SC_NOT_FOUND);
-        }
-    }
+    
 
     private Object[] prepareMethodArguments(Method method, HttpServletRequest req, 
                                         HttpServletResponse resp,
