@@ -29,10 +29,11 @@ public class FrontServlet extends HttpServlet {
         listerAnnotations();
     }
     
+    
     private void initialiserRoutes() throws ServletException {
         try {
+            // Scanner les contrôleurs
             List<Class<?>> controllerClasses = PackageScanner.getClasses("com.sprint.controller");
-            List<Class<?>> annotationClasses = PackageScanner.getClasses("com.sprint.annotation");
             
             for (Class<?> controllerClass : controllerClasses) {
                 Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
@@ -40,20 +41,21 @@ public class FrontServlet extends HttpServlet {
                 
                 System.out.println("Initialisation du contrôleur: " + controllerName);
                 
+                // Parcourir les méthodes du contrôleur
                 for (Method method : controllerClass.getDeclaredMethods()) {
-                    for (Class<?> annotationClass : annotationClasses) {
-                        if (annotationClass.isAnnotation()) {
-                            Annotation annotation = method.getAnnotation((Class<? extends Annotation>) annotationClass);
-                            if (annotation != null) {
-                                enregistrerRoute(annotation, annotationClass, method, controllerInstance, controllerName);
-                            }
-                        }
+                    Test testAnnotation = method.getAnnotation(Test.class);
+                    if (testAnnotation != null) {
+                        String path = testAnnotation.value();
+                        routeMap.put(path, method);
+                        pathPatterns.put(path, new PathPattern(path));
+                        controllerInstances.put(path, controllerInstance);
+                        System.out.println("Route enregistrée: " + path + " -> " + 
+                            controllerName + "." + method.getName());
                     }
                 }
             }
-            
         } catch (Exception e) {
-            throw new ServletException("Erreur lors de l'initialisation des routes: " + e.getMessage(), e);
+            throw new ServletException("Erreur lors de l'initialisation des routes", e);
         }
     }
 
@@ -154,12 +156,6 @@ public class FrontServlet extends HttpServlet {
         return false;
     }
     
-    // private Object[] getParametresMethode(Method method, HttpServletRequest req, HttpServletResponse resp) {
-    //     // Implémentez la logique pour extraire les paramètres de la requête
-    //     // et les convertir dans le type attendu par la méthode
-    //     return new Object[0];
-    // }
-    
     private void traiterResultat(Object result, HttpServletRequest req, HttpServletResponse resp) 
             throws ServletException, IOException {
         if (result == null) {
@@ -199,5 +195,81 @@ public class FrontServlet extends HttpServlet {
         } catch (IOException ex) {
             ex.printStackTrace();
         }
+    }
+
+
+    private Method trouverMethode(String requestPath) {
+        for (Map.Entry<String, PathPattern> entry : pathPatterns.entrySet()) {
+            if (entry.getValue().matches(requestPath)) {
+                return routeMap.get(entry.getKey());
+            }
+        }
+        return null;
+    }
+
+    private Map<String, String> extraireParametres(String requestPath) {
+        for (PathPattern pattern : pathPatterns.values()) {
+            if (pattern.matches(requestPath)) {
+                return pattern.extractParameters(requestPath);
+            }
+        }
+        return Collections.emptyMap();
+    }
+
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) 
+            throws ServletException, IOException {
+        String path = req.getRequestURI().substring(req.getContextPath().length());
+        
+        Method method = trouverMethode(path);
+        if (method != null) {
+            try {
+                // Extraire les paramètres du chemin
+                Map<String, String> pathParams = extraireParametres(path);
+                
+                // Préparer les arguments pour la méthode
+                Object[] args = prepareMethodArguments(method, req, resp, pathParams);
+                
+                // Appeler la méthode du contrôleur
+                Object result = method.invoke(controllerInstances.get(method.getDeclaringClass().getName()), args);
+                
+                // Traiter le résultat
+                traiterResultat(result, req, resp);
+                
+            } catch (Exception e) {
+                gererErreur(e, resp);
+            }
+        } else {
+            resp.sendError(HttpServletResponse.SC_NOT_FOUND);
+        }
+    }
+
+    private Object[] prepareMethodArguments(Method method, HttpServletRequest req, 
+                                        HttpServletResponse resp,
+                                        Map<String, String> pathParams) {
+        Parameter[] parameters = method.getParameters();
+        Object[] args = new Object[parameters.length];
+        
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            String paramName = param.getName();
+            Class<?> paramType = param.getType();
+            
+            // 1. Vérifier les paramètres de chemin
+            if (pathParams.containsKey(paramName)) {
+                args[i] = convertToType(pathParams.get(paramName), paramType);
+            }
+            // 2. Vérifier les paramètres de requête
+            else if (req.getParameter(paramName) != null) {
+                args[i] = convertToType(req.getParameter(paramName), paramType);
+            }
+            // 3. Vérifier les objets spéciaux (HttpServletRequest, HttpServletResponse)
+            else if (paramType == HttpServletRequest.class) {
+                args[i] = req;
+            }
+            else if (paramType == HttpServletResponse.class) {
+                args[i] = resp;
+            }
+        }
+        return args;
     }
 }
