@@ -16,6 +16,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import com.sprint.annotation.Test;
+import com.sprint.annotation.RequestParam; // Ajouter cet import
 import com.sprint.model.ModelView;
 import com.sprint.util.PackageScanner;
 import com.sprint.util.PathPattern;
@@ -124,23 +125,35 @@ public class FrontServlet extends HttpServlet {
 
     private boolean executerRoute(String path, HttpServletRequest req, HttpServletResponse resp) {
         Method method = trouverMethode(path);
-        if (method != null) {
-            try {
-                method.setAccessible(true);
-                Object controller = controllerInstances.get(method);
-
-                Map<String, String> pathParams = extraireParametres(path);
-                Object[] args = prepareMethodArguments(method, req, resp, pathParams);
-                Object result = method.invoke(controller, args);
-
-                traiterResultat(result, req, resp);
-                return true;
-
-            } catch (Exception e) {
-                gererErreur(e, resp);
-            }
+        if (method == null) {
+            return false;
         }
-        return false;
+        try {
+            // 1. Récupérer l'instance du contrôleur
+            Object controller = controllerInstances.computeIfAbsent(
+                method, 
+                key -> {
+                    try {
+                        return key.getDeclaringClass().getDeclaredConstructor().newInstance();
+                    } catch (Exception e) {
+                        throw new RuntimeException("Erreur lors de la création du contrôleur", e);
+                    }
+                }
+            );
+
+            // 2. Extraire les arguments
+            Object[] args = extraireArguments(method, path, req, resp);
+
+            // 3. Appeler la méthode du contrôleur
+            Object result = method.invoke(controller, args);
+
+            // 4. Traiter le résultat
+            traiterResultat(result, req, resp);
+            return true;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur lors de l'exécution de la route: " + path, e);
+        }
     }
 
     private void traiterResultat(Object result, HttpServletRequest req, HttpServletResponse resp)
@@ -217,30 +230,93 @@ public class FrontServlet extends HttpServlet {
         return Collections.emptyMap();
     }
 
-    private Object[] prepareMethodArguments(Method method, HttpServletRequest req,
-                                            HttpServletResponse resp,
-                                            Map<String, String> pathParams) {
+    private Object[] extraireArguments(Method method, String path, HttpServletRequest req, HttpServletResponse resp) {
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
-
+        
+        // Récupérer le pattern de l'URL depuis l'annotation @Test
+        String urlPattern = method.getAnnotation(Test.class).value();
+        Map<String, String> pathParams = extraireParametresChemin(urlPattern, path);
+        
         for (int i = 0; i < parameters.length; i++) {
             Parameter param = parameters[i];
-            String paramName = param.getName();
-            Class<?> paramType = param.getType();
-
-            if (pathParams.containsKey(paramName)) {
-                args[i] = convertToType(pathParams.get(paramName), paramType);
-            }
-            else if (req.getParameter(paramName) != null) {
-                args[i] = convertToType(req.getParameter(paramName), paramType);
-            }
-            else if (paramType == HttpServletRequest.class) {
-                args[i] = req;
-            }
-            else if (paramType == HttpServletResponse.class) {
-                args[i] = resp;
+            
+            try {
+                // 1. Vérifier si c'est un paramètre de requête avec @RequestParam
+                if (param.isAnnotationPresent(RequestParam.class)) {
+                    RequestParam requestParam = param.getAnnotation(RequestParam.class);
+                    String paramName = requestParam.value().isEmpty() ? param.getName() : requestParam.value();
+                    
+                    // Vérifier d'abord dans les paramètres de chemin, puis dans les paramètres de requête
+                    String paramValue = pathParams.getOrDefault(paramName, req.getParameter(paramName));
+                    
+                    if (paramValue == null && requestParam.required()) {
+                        throw new IllegalArgumentException("Paramètre requis manquant: " + paramName);
+                    }
+                    
+                    args[i] = convertToType(paramValue, param.getType());
+                }
+                // 2. Vérifier si c'est un paramètre de chemin (nom doit correspondre)
+                else if (pathParams.containsKey(param.getName())) {
+                    args[i] = convertToType(pathParams.get(param.getName()), param.getType());
+                }
+                // 3. Injection des objets spéciaux
+                else if (param.getType() == HttpServletRequest.class) {
+                    args[i] = req;
+                } 
+                else if (param.getType() == HttpServletResponse.class) {
+                    args[i] = resp;
+                }
+                // 4. Gestion des paramètres de requête sans annotation (par nom de paramètre)
+                else {
+                    String paramValue = req.getParameter(param.getName());
+                    if (paramValue != null) {
+                        args[i] = convertToType(paramValue, param.getType());
+                    } else if (param.getType().isPrimitive()) {
+                        // Valeur par défaut pour les types primitifs
+                        args[i] = getDefaultValue(param.getType());
+                    }
+                }
+            } catch (Exception e) {
+                throw new RuntimeException("Erreur lors de l'extraction de l'argument " + 
+                                        param.getName() + ": " + e.getMessage(), e);
             }
         }
+        
         return args;
+    }
+
+    // Méthode utilitaire pour extraire les paramètres de chemin
+    private Map<String, String> extraireParametresChemin(String pattern, String path) {
+        Map<String, String> params = new HashMap<>();
+        String[] patternParts = pattern.split("/");
+        String[] pathParts = path.split("/");
+        
+        if (patternParts.length != pathParts.length) {
+            return params;
+        }
+        
+        for (int i = 0; i < patternParts.length; i++) {
+            String patternPart = patternParts[i];
+            if (patternPart.startsWith("{") && patternPart.endsWith("}")) {
+                String paramName = patternPart.substring(1, patternPart.length() - 1);
+                params.put(paramName, pathParts[i]);
+            }
+        }
+        
+        return params;
+    }
+
+    // Méthode utilitaire pour obtenir une valeur par défaut pour les types primitifs
+    private Object getDefaultValue(Class<?> type) {
+        if (type == int.class) return 0;
+        if (type == long.class) return 0L;
+        if (type == double.class) return 0.0;
+        if (type == float.class) return 0.0f;
+        if (type == boolean.class) return false;
+        if (type == byte.class) return (byte) 0;
+        if (type == short.class) return (short) 0;
+        if (type == char.class) return '\0';
+        return null;
     }
 }
