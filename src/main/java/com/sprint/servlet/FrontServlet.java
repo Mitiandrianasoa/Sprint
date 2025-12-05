@@ -37,26 +37,43 @@ public class FrontServlet extends HttpServlet {
     private void initialiserRoutes() throws ServletException {
         try {
             List<Class<?>> controllerClasses = PackageScanner.getClasses("com.sprint.controller");
-
-            for (Class<?> controllerClass : controllerClasses) {
-                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-                String controllerName = controllerClass.getSimpleName();
-
-                System.out.println("Initialisation du contrôleur: " + controllerName);
-
-                for (Method method : controllerClass.getDeclaredMethods()) {
-                    Test testAnnotation = method.getAnnotation(Test.class);
-                    if (testAnnotation != null) {
-                        String path = testAnnotation.value();
-                        routeMap.put(path, method);
-                        pathPatterns.put(path, new PathPattern(path));
-                        controllerInstances.put(method, controllerInstance);
-                        System.out.println("Route enregistrée: " + path + " -> " +
-                                controllerName + "." + method.getName());
+            for (Method method : controllerClass.getDeclaredMethods()) {
+                // Vérifier d'abord les annotations spécifiques
+                Get getAnnotation = method.getAnnotation(Get.class);
+                Post postAnnotation = method.getAnnotation(Post.class);
+                Test testAnnotation = method.getAnnotation(Test.class);
+                
+                String path = null;
+                String httpMethod = null;
+                
+                if (getAnnotation != null) {
+                    path = getAnnotation.value();
+                    httpMethod = "GET";
+                } else if (postAnnotation != null) {
+                    path = postAnnotation.value();
+                    httpMethod = "POST";
+                } else if (testAnnotation != null) {
+                    path = testAnnotation.value();
+                    // Pour l'annotation @Test, on vérifie si une méthode est spécifiée
+                    if (testAnnotation.method().length > 0) {
+                        httpMethod = testAnnotation.method()[0]; // Prend la première méthode spécifiée
                     }
                 }
-            }
-        } catch (Exception e) {
+                
+                if (path != null && !path.isEmpty()) {
+                    String key = httpMethod != null ? httpMethod + ":" + path : path;
+                    routeMap.put(key, method);
+                    controllerInstances.put(method, controllerInstance);
+                    
+                    // Pour le support des paramètres dans l'URL
+                    if (path.contains("{")) {
+                        pathPatterns.put(key, new PathPattern(path));
+                    }
+                    
+                    System.out.println("Route enregistrée: " + key + " -> " + 
+                                    controllerName + "." + method.getName());
+                }
+            } catch (Exception e) {
             throw new ServletException("Erreur lors de l'initialisation des routes", e);
         }
     }
