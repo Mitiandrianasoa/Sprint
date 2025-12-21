@@ -1,27 +1,42 @@
 package com.sprint.util;
 
+import com.sprint.model.MultipartFile;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.reflect.Field;
+import java.util.Map;
 
 /**
  * Classe utilitaire pour le binding automatique des entités
- * Sprint 8 bis
+ * Sprint 8 bis avec extension pour Sprint 10 (fichiers)
  */
 public class EntityBinder {
 
     /**
      * Bind les paramètres de la requête HTTP vers une instance d'entité
-     * 
-     * @param request La requête HTTP contenant les paramètres
-     * @param entityClass La classe de l'entité à instancier
-     * @return Une instance de l'entité avec les champs remplis
-     * @throws Exception Si une erreur survient lors du binding
+     * Inclut maintenant les fichiers uploadés (Sprint 10)
      */
     public static Object bindEntity(HttpServletRequest request, Class<?> entityClass) 
             throws Exception {
         
         // Créer une nouvelle instance de l'entité
         Object entity = entityClass.getDeclaredConstructor().newInstance();
+        
+        // Vérifier si c'est une requête multipart
+        boolean isMultipart = MultipartRequestHandler.isMultipartRequest(request);
+        
+        // Extraire les paramètres (textuels)
+        Map<String, String> parameters;
+        if (isMultipart) {
+            parameters = MultipartRequestHandler.extractMultipartParameters(request);
+        } else {
+            parameters = new java.util.HashMap<>();
+            Map<String, String[]> paramMap = request.getParameterMap();
+            for (Map.Entry<String, String[]> entry : paramMap.entrySet()) {
+                if (entry.getValue() != null && entry.getValue().length > 0) {
+                    parameters.put(entry.getKey(), entry.getValue()[0]);
+                }
+            }
+        }
         
         // Récupérer tous les champs de la classe
         Field[] fields = entityClass.getDeclaredFields();
@@ -30,8 +45,28 @@ public class EntityBinder {
             // Rendre le champ accessible (même s'il est privé)
             field.setAccessible(true);
             
-            // Récupérer la valeur du paramètre correspondant au nom du champ
-            String paramValue = request.getParameter(field.getName());
+            Class<?> fieldType = field.getType();
+            
+            // CAS SPRINT 10: Gestion des fichiers MultipartFile
+            if (fieldType == MultipartFile.class) {
+                if (isMultipart) {
+                    try {
+                        MultipartFile file = MultipartRequestHandler.getMultipartFile(
+                            request, field.getName()
+                        );
+                        if (file != null) {
+                            field.set(entity, file);
+                        }
+                    } catch (Exception e) {
+                        System.err.println("Erreur lors du binding du fichier " + 
+                                         field.getName() + ": " + e.getMessage());
+                    }
+                }
+                continue;
+            }
+            
+            // Cas standard: paramètres textuels
+            String paramValue = parameters.get(field.getName());
             
             // Si le paramètre existe et n'est pas vide
             if (paramValue != null && !paramValue.isEmpty()) {
@@ -51,11 +86,17 @@ public class EntityBinder {
     }
 
     /**
+     * Vérifie si une classe est un type supporté pour le binding
+     * Inclut maintenant MultipartFile (Sprint 10)
+     */
+    public static boolean isBindableType(Class<?> clazz) {
+        return isSimpleType(clazz) || 
+               clazz == MultipartFile.class || 
+               isEntity(clazz);
+    }
+
+    /**
      * Convertit une valeur String vers le type cible
-     * 
-     * @param value La valeur à convertir
-     * @param targetType Le type cible
-     * @return La valeur convertie
      */
     private static Object convertValue(String value, Class<?> targetType) {
         if (value == null || value.trim().isEmpty()) {
@@ -120,20 +161,15 @@ public class EntityBinder {
 
     /**
      * Vérifie si une classe est une entité
-     * Une classe est considérée comme une entité si :
-     * - Elle est dans un package contenant "entity" ou "model"
-     * - Elle a l'annotation @Entity (si disponible)
-     * 
-     * @param clazz La classe à vérifier
-     * @return true si c'est une entité, false sinon
      */
     public static boolean isEntity(Class<?> clazz) {
         // Vérifier le package
         String packageName = clazz.getPackage().getName().toLowerCase();
         if (packageName.contains("entity") || packageName.contains("model")) {
-            // Exclure ModelView qui est dans le package model
+            // Exclure les classes utilitaires du package model
             if (clazz.getSimpleName().equals("ModelView") || 
-                clazz.getSimpleName().equals("JsonResponse")) {
+                clazz.getSimpleName().equals("JsonResponse") ||
+                clazz.getSimpleName().equals("MultipartFile")) {
                 return false;
             }
             return true;
@@ -156,9 +192,6 @@ public class EntityBinder {
 
     /**
      * Vérifie si une classe est un type simple (String, Integer, etc.)
-     * 
-     * @param clazz La classe à vérifier
-     * @return true si c'est un type simple, false sinon
      */
     public static boolean isSimpleType(Class<?> clazz) {
         return clazz == String.class ||
