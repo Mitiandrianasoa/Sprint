@@ -20,6 +20,7 @@ import com.sprint.annotation.RequestParam; // Ajouter cet import
 import com.sprint.model.ModelView;
 import com.sprint.util.PackageScanner;
 import com.sprint.util.PathPattern;
+import com.sprint.util.EntityBinder;
 
 @WebServlet("/")
 public class FrontServlet extends HttpServlet {
@@ -285,19 +286,28 @@ public class FrontServlet extends HttpServlet {
         return Collections.emptyMap();
     }
 
+  
     private Object[] extraireArguments(Method method, String path, HttpServletRequest req, HttpServletResponse resp) {
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
         
         // Récupérer le pattern de l'URL depuis l'annotation @Test
-        String urlPattern = method.getAnnotation(Test.class).value();
+        Test testAnnotation = method.getAnnotation(Test.class);
+        String urlPattern = testAnnotation != null ? testAnnotation.value() : "";
         Map<String, String> pathParams = extraireParametresChemin(urlPattern, path);
         
         for (int i = 0; i < parameters.length; i++) {
             Parameter param = parameters[i];
+            Class<?> paramType = param.getType();
             
             try {
-                // 1. Vérifier si c'est un paramètre de requête avec @RequestParam
+                if (EntityBinder.isEntity(paramType)) {
+                    System.out.println("🔍 Entity détectée: " + paramType.getSimpleName());
+                    args[i] = EntityBinder.bindEntity(req, paramType);
+                    System.out.println("✅ Entity bindée: " + args[i]);
+                    continue;
+                }
+                
                 if (param.isAnnotationPresent(RequestParam.class)) {
                     RequestParam requestParam = param.getAnnotation(RequestParam.class);
                     String paramName = requestParam.value().isEmpty() ? param.getName() : requestParam.value();
@@ -309,30 +319,37 @@ public class FrontServlet extends HttpServlet {
                         throw new IllegalArgumentException("Paramètre requis manquant: " + paramName);
                     }
                     
-                    args[i] = convertToType(paramValue, param.getType());
+                    args[i] = convertToType(paramValue, paramType);
                 }
                 // 2. Vérifier si c'est un paramètre de chemin (nom doit correspondre)
                 else if (pathParams.containsKey(param.getName())) {
-                    args[i] = convertToType(pathParams.get(param.getName()), param.getType());
+                    args[i] = convertToType(pathParams.get(param.getName()), paramType);
                 }
                 // 3. Injection des objets spéciaux
-                else if (param.getType() == HttpServletRequest.class) {
+                else if (paramType == HttpServletRequest.class) {
                     args[i] = req;
                 } 
-                else if (param.getType() == HttpServletResponse.class) {
+                else if (paramType == HttpServletResponse.class) {
                     args[i] = resp;
                 }
                 // 4. Gestion des paramètres de requête sans annotation (par nom de paramètre)
-                else {
+                else if (EntityBinder.isSimpleType(paramType)) {
                     String paramValue = req.getParameter(param.getName());
                     if (paramValue != null) {
-                        args[i] = convertToType(paramValue, param.getType());
-                    } else if (param.getType().isPrimitive()) {
+                        args[i] = convertToType(paramValue, paramType);
+                    } else if (paramType.isPrimitive()) {
                         // Valeur par défaut pour les types primitifs
-                        args[i] = getDefaultValue(param.getType());
+                        args[i] = getDefaultValue(paramType);
                     }
                 }
+                // 5. Si aucun cas ne correspond et que ce n'est pas une entity
+                else {
+                    args[i] = null;
+                }
+                
             } catch (Exception e) {
+                System.err.println("❌ Erreur lors de l'extraction de l'argument " + 
+                                param.getName() + ": " + e.getMessage());
                 throw new RuntimeException("Erreur lors de l'extraction de l'argument " + 
                                         param.getName() + ": " + e.getMessage(), e);
             }
