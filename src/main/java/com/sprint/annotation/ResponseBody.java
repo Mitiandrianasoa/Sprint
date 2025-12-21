@@ -8,6 +8,7 @@ import java.lang.annotation.Target;
 /**
  * Annotation pour indiquer qu'une méthode retourne directement du JSON
  * sans passer par une vue.
+ * correction sprint9
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
