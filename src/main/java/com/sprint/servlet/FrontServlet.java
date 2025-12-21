@@ -37,45 +37,70 @@ public class FrontServlet extends HttpServlet {
     private void initialiserRoutes() throws ServletException {
         try {
             List<Class<?>> controllerClasses = PackageScanner.getClasses("com.sprint.controller");
-            for (Method method : controllerClass.getDeclaredMethods()) {
-                // Vérifier d'abord les annotations spécifiques
-                Get getAnnotation = method.getAnnotation(Get.class);
-                Post postAnnotation = method.getAnnotation(Post.class);
-                Test testAnnotation = method.getAnnotation(Test.class);
+            
+            for (Class<?> controllerClass : controllerClasses) {
+                // Création d'une instance du contrôleur
+                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
                 
-                String path = null;
-                String httpMethod = null;
-                
-                if (getAnnotation != null) {
-                    path = getAnnotation.value();
-                    httpMethod = "GET";
-                } else if (postAnnotation != null) {
-                    path = postAnnotation.value();
-                    httpMethod = "POST";
-                } else if (testAnnotation != null) {
-                    path = testAnnotation.value();
-                    // Pour l'annotation @Test, on vérifie si une méthode est spécifiée
-                    if (testAnnotation.method().length > 0) {
-                        httpMethod = testAnnotation.method()[0]; // Prend la première méthode spécifiée
+                // Parcours des méthodes du contrôleur
+                for (Method method : controllerClass.getDeclaredMethods()) {
+                    // Extraction de la méthode HTTP et du chemin
+                    String httpMethod = extractHttpMethod(method);
+                    String path = extractPath(method);
+                    
+                    // Si un chemin valide est trouvé
+                    if (path != null && !path.isEmpty()) {
+                        // Création de la clé de routage (ex: "GET:/users" ou "/endpoint")
+                        String key = httpMethod != null ? httpMethod + ":" + path : path;
+                        
+                        // Enregistrement de la route
+                        routeMap.put(key, method);
+                        controllerInstances.put(method, controllerInstance);
+                        
+                        // Gestion des paramètres d'URL
+                        if (path.contains("{")) {
+                            pathPatterns.put(key, new PathPattern(path));
+                        }
+                        
+                        // Log pour le débogage
+                        System.out.println("Route enregistrée: " + key + " -> " + 
+                                        controllerClass.getSimpleName() + "." + method.getName());
                     }
                 }
-                
-                if (path != null && !path.isEmpty()) {
-                    String key = httpMethod != null ? httpMethod + ":" + path : path;
-                    routeMap.put(key, method);
-                    controllerInstances.put(method, controllerInstance);
-                    
-                    // Pour le support des paramètres dans l'URL
-                    if (path.contains("{")) {
-                        pathPatterns.put(key, new PathPattern(path));
-                    }
-                    
-                    System.out.println("Route enregistrée: " + key + " -> " + 
-                                    controllerName + "." + method.getName());
-                }
-            } catch (Exception e) {
+            }
+        } catch (Exception e) {
             throw new ServletException("Erreur lors de l'initialisation des routes", e);
         }
+    }
+
+    // Méthode utilitaire pour extraire la méthode HTTP d'une annotation
+    private String extractHttpMethod(Method method) {
+        Get get = method.getAnnotation(Get.class);
+        if (get != null) return "GET";
+        
+        Post post = method.getAnnotation(Post.class);
+        if (post != null) return "POST";
+        
+        Test test = method.getAnnotation(Test.class);
+        if (test != null && test.method().length > 0) {
+            return test.method()[0];
+        }
+        
+        return null;
+    }
+
+    // Méthode utilitaire pour extraire le chemin d'une annotation
+    private String extractPath(Method method) {
+        Get get = method.getAnnotation(Get.class);
+        if (get != null) return get.value();
+        
+        Post post = method.getAnnotation(Post.class);
+        if (post != null) return post.value();
+        
+        Test test = method.getAnnotation(Test.class);
+        if (test != null) return test.value();
+        
+        return null;
     }
 
     private void listerAnnotations() {
@@ -173,6 +198,7 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
+
     private void traiterResultat(Object result, HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
         if (result == null) {
@@ -186,15 +212,27 @@ public class FrontServlet extends HttpServlet {
         } else if (result instanceof ModelView) {
             ModelView modelView = (ModelView) result;
 
+            // NOUVEAU Sprint 8: Sauvegarder le type de données détecté
+            req.setAttribute("dataType", modelView.getDataType());
+
+            // Transférer toutes les données du ModelView vers la requête
             if (modelView.getData() != null) {
                 for (Map.Entry<String, Object> entry : modelView.getData().entrySet()) {
                     req.setAttribute(entry.getKey(), entry.getValue());
                 }
             }
 
+            // Forward vers la vue JSP
             String viewPath = "/WEB-INF/views/" + modelView.getView() + ".jsp";
             RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
             dispatcher.forward(req, resp);
+        }
+        else {
+            // Pour les autres types d'objets, on les ajoute comme attribut 
+            // avec le nom de la classe en minuscules
+            String attributeName = result.getClass().getSimpleName();
+            attributeName = attributeName.substring(0, 1).toLowerCase() + attributeName.substring(1);
+            req.setAttribute(attributeName, result);
         }
     }
 
@@ -326,14 +364,17 @@ public class FrontServlet extends HttpServlet {
 
     // Méthode utilitaire pour obtenir une valeur par défaut pour les types primitifs
     private Object getDefaultValue(Class<?> type) {
-        if (type == int.class) return 0;
-        if (type == long.class) return 0L;
-        if (type == double.class) return 0.0;
-        if (type == float.class) return 0.0f;
-        if (type == boolean.class) return false;
-        if (type == byte.class) return (byte) 0;
-        if (type == short.class) return (short) 0;
-        if (type == char.class) return '\0';
-        return null;
+            if (type == int.class) return 0;
+            if (type == long.class) return 0L;
+            if (type == double.class) return 0.0;
+            if (type == float.class) return 0.0f;
+            if (type == boolean.class) return false;
+            if (type == byte.class) return (byte) 0;
+            if (type == short.class) return (short) 0;
+            if (type == char.class) return '\0';
+            return null;
     }
+
+
 }
+
