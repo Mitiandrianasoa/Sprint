@@ -15,9 +15,15 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sprint.annotation.Test;
-import com.sprint.annotation.RequestParam; // Ajouter cet import
+import com.sprint.annotation.Get;
+import com.sprint.annotation.Post;
+import com.sprint.annotation.RestController;
+import com.sprint.annotation.ResponseBody;
+import com.sprint.annotation.RequestParam;
 import com.sprint.model.ModelView;
+import com.sprint.model.JsonResponse;
 import com.sprint.util.PackageScanner;
 import com.sprint.util.PathPattern;
 import com.sprint.util.EntityBinder;
@@ -27,6 +33,8 @@ public class FrontServlet extends HttpServlet {
     private Map<String, Method> routeMap = new HashMap<>();
     private Map<Method, Object> controllerInstances = new HashMap<>();
     private Map<String, PathPattern> pathPatterns = new HashMap<>();
+    private Map<Class<?>, Boolean> restControllerCache = new HashMap<>();
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
     public void init() throws ServletException {
@@ -40,6 +48,16 @@ public class FrontServlet extends HttpServlet {
             List<Class<?>> controllerClasses = PackageScanner.getClasses("com.sprint.controller");
             
             for (Class<?> controllerClass : controllerClasses) {
+                // Vérifier si c'est un contrôleur REST
+                boolean isRestController = controllerClass.isAnnotationPresent(RestController.class);
+                restControllerCache.put(controllerClass, isRestController);
+                
+                String controllerPrefix = "";
+                if (isRestController) {
+                    RestController restController = controllerClass.getAnnotation(RestController.class);
+                    controllerPrefix = restController.value();
+                }
+                
                 // Création d'une instance du contrôleur
                 Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
                 
@@ -51,21 +69,25 @@ public class FrontServlet extends HttpServlet {
                     
                     // Si un chemin valide est trouvé
                     if (path != null && !path.isEmpty()) {
+                        // Ajouter le préfixe du contrôleur REST si présent
+                        String fullPath = controllerPrefix + path;
+                        
                         // Création de la clé de routage (ex: "GET:/users" ou "/endpoint")
-                        String key = httpMethod != null ? httpMethod + ":" + path : path;
+                        String key = httpMethod != null ? httpMethod + ":" + fullPath : fullPath;
                         
                         // Enregistrement de la route
                         routeMap.put(key, method);
                         controllerInstances.put(method, controllerInstance);
                         
                         // Gestion des paramètres d'URL
-                        if (path.contains("{")) {
-                            pathPatterns.put(key, new PathPattern(path));
+                        if (fullPath.contains("{")) {
+                            pathPatterns.put(key, new PathPattern(fullPath));
                         }
                         
                         // Log pour le débogage
                         System.out.println("Route enregistrée: " + key + " -> " + 
-                                        controllerClass.getSimpleName() + "." + method.getName());
+                                        controllerClass.getSimpleName() + "." + method.getName() +
+                                        (isRestController ? " [REST]" : ""));
                     }
                 }
             }
@@ -148,9 +170,11 @@ public class FrontServlet extends HttpServlet {
         }
 
         if (!executerRoute(path, req, resp)) {
+            // Retourner une erreur 404 en JSON si la route n'est pas trouvée
+            resp.setContentType("application/json;charset=UTF-8");
             resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
-            resp.setContentType("text/html;charset=UTF-8");
-            resp.getWriter().write("<h1>404 - Page non trouvée</h1><p>Route: " + path + "</p>");
+            JsonResponse errorResponse = JsonResponse.notFound("Route non trouvée: " + path);
+            resp.getWriter().write(errorResponse.toJson());
         }
     }
 
@@ -190,50 +214,114 @@ public class FrontServlet extends HttpServlet {
             // 3. Appeler la méthode du contrôleur
             Object result = method.invoke(controller, args);
 
-            // 4. Traiter le résultat
-            traiterResultat(result, req, resp);
+            // 4. Traiter le résultat avec les informations du contrôleur
+            traiterResultat(result, req, resp, method, controller);
             return true;
 
         } catch (Exception e) {
-            throw new RuntimeException("Erreur lors de l'exécution de la route: " + path, e);
+            gererErreurJson(e, resp);
+            return false;
         }
     }
 
-
-    private void traiterResultat(Object result, HttpServletRequest req, HttpServletResponse resp)
+    private void traiterResultat(Object result, HttpServletRequest req, HttpServletResponse resp,
+                                 Method method, Object controller)
             throws ServletException, IOException {
         if (result == null) {
+            // Si le résultat est null, retourner une réponse JSON vide
+            if (estRetourJson(method, controller)) {
+                sendJsonResponse(JsonResponse.success(), resp);
+            }
             return;
         }
 
-        if (result instanceof String) {
+        // Vérifier si on doit retourner du JSON
+        if (estRetourJson(method, controller) || result instanceof JsonResponse) {
+            // Retourner du JSON
+            sendJsonResponse(result, resp);
+        } else if (result instanceof String) {
             resp.setContentType("text/plain;charset=UTF-8");
             resp.getWriter().write((String) result);
-
         } else if (result instanceof ModelView) {
             ModelView modelView = (ModelView) result;
-
-            // NOUVEAU Sprint 8: Sauvegarder le type de données détecté
+            
+            // Sauvegarder le type de données détecté
             req.setAttribute("dataType", modelView.getDataType());
-
+            
             // Transférer toutes les données du ModelView vers la requête
             if (modelView.getData() != null) {
                 for (Map.Entry<String, Object> entry : modelView.getData().entrySet()) {
                     req.setAttribute(entry.getKey(), entry.getValue());
                 }
             }
-
+            
             // Forward vers la vue JSP
             String viewPath = "/WEB-INF/views/" + modelView.getView() + ".jsp";
             RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
             dispatcher.forward(req, resp);
-        }
-        else {
-            // Pour les autres types d'objets, on les ajoute comme attribut 
-            // avec le nom de la classe en minuscules
+        } else {
+            // Pour les autres types d'objets non-REST, on les ajoute comme attribut
             String attributeName = result.getClass().getSimpleName();
             attributeName = attributeName.substring(0, 1).toLowerCase() + attributeName.substring(1);
             req.setAttribute(attributeName, result);
+            
+            // Par défaut, forward vers une vue JSP basée sur le nom de la méthode
+            String viewName = method.getName();
+            String viewPath = "/WEB-INF/views/" + viewName + ".jsp";
+            RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
+            if (dispatcher != null) {
+                dispatcher.forward(req, resp);
+            } else {
+                // Si la vue n'existe pas, retourner l'objet en JSON par défaut
+                sendJsonResponse(result, resp);
+            }
+        }
+    }
+
+    private boolean estRetourJson(Method method, Object controller) {
+        // Vérifier si c'est un contrôleur REST
+        boolean isRestController = restControllerCache.getOrDefault(controller.getClass(), false);
+        
+        // Vérifier si la méthode a l'annotation @ResponseBody
+        boolean hasResponseBody = method.isAnnotationPresent(ResponseBody.class);
+        
+        // Vérifier si la méthode retourne un type qui devrait être en JSON
+        Class<?> returnType = method.getReturnType();
+        boolean returnsJsonResponse = returnType == JsonResponse.class;
+        boolean returnsObject = !EntityBinder.isSimpleType(returnType) && 
+                              !returnType.isPrimitive() && 
+                              returnType != String.class && 
+                              returnType != ModelView.class;
+        
+        return isRestController || hasResponseBody || returnsJsonResponse || returnsObject;
+    }
+
+    private void sendJsonResponse(Object result, HttpServletResponse resp) throws IOException {
+        resp.setContentType("application/json;charset=UTF-8");
+        
+        if (result instanceof JsonResponse) {
+            // Si c'est déjà un JsonResponse
+            JsonResponse jsonResponse = (JsonResponse) result;
+            resp.setStatus(jsonResponse.getCode());
+            resp.getWriter().write(jsonResponse.toJson());
+        } else {
+            // Sinon, encapsuler dans un JsonResponse
+            JsonResponse jsonResponse = JsonResponse.success(result);
+            resp.setStatus(200);
+            resp.getWriter().write(objectMapper.writeValueAsString(jsonResponse));
+        }
+    }
+
+    private void gererErreurJson(Exception e, HttpServletResponse resp) {
+        try {
+            e.printStackTrace();
+            resp.setContentType("application/json;charset=UTF-8");
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            
+            JsonResponse errorResponse = JsonResponse.serverError(e.getMessage());
+            resp.getWriter().write(errorResponse.toJson());
+        } catch (IOException ex) {
+            ex.printStackTrace();
         }
     }
 
@@ -257,18 +345,15 @@ public class FrontServlet extends HttpServlet {
         return value;
     }
 
-    private void gererErreur(Exception e, HttpServletResponse resp) {
-        try {
-            e.printStackTrace();
-            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            resp.setContentType("text/html;charset=UTF-8");
-            resp.getWriter().write("<h1>Erreur 500</h1><pre>" + e.getMessage() + "</pre>");
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        }
-    }
-
     private Method trouverMethode(String requestPath) {
+        String httpMethod = "GET"; // Par défaut
+        String key = httpMethod + ":" + requestPath;
+        
+        if (routeMap.containsKey(key)) {
+            return routeMap.get(key);
+        }
+        
+        // Vérifier les patterns avec paramètres
         for (Map.Entry<String, PathPattern> entry : pathPatterns.entrySet()) {
             if (entry.getValue().matches(requestPath)) {
                 return routeMap.get(entry.getKey());
@@ -286,7 +371,6 @@ public class FrontServlet extends HttpServlet {
         return Collections.emptyMap();
     }
 
-  
     private Object[] extraireArguments(Method method, String path, HttpServletRequest req, HttpServletResponse resp) {
         Parameter[] parameters = method.getParameters();
         Object[] args = new Object[parameters.length];
@@ -381,17 +465,25 @@ public class FrontServlet extends HttpServlet {
 
     // Méthode utilitaire pour obtenir une valeur par défaut pour les types primitifs
     private Object getDefaultValue(Class<?> type) {
-            if (type == int.class) return 0;
-            if (type == long.class) return 0L;
-            if (type == double.class) return 0.0;
-            if (type == float.class) return 0.0f;
-            if (type == boolean.class) return false;
-            if (type == byte.class) return (byte) 0;
-            if (type == short.class) return (short) 0;
-            if (type == char.class) return '\0';
-            return null;
+        if (type == int.class) return 0;
+        if (type == long.class) return 0L;
+        if (type == double.class) return 0.0;
+        if (type == float.class) return 0.0f;
+        if (type == boolean.class) return false;
+        if (type == byte.class) return (byte) 0;
+        if (type == short.class) return (short) 0;
+        if (type == char.class) return '\0';
+        return null;
     }
 
-
+    private void gererErreur(Exception e, HttpServletResponse resp) {
+        try {
+            e.printStackTrace();
+            resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            resp.setContentType("text/html;charset=UTF-8");
+            resp.getWriter().write("<h1>Erreur 500</h1><pre>" + e.getMessage() + "</pre>");
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+    }
 }
-
