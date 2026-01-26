@@ -23,6 +23,7 @@ import com.sprint.annotation.Post;
 import com.sprint.annotation.RestController;
 import com.sprint.annotation.ResponseBody;
 import com.sprint.annotation.RequestParam;
+import com.sprint.annotation.Session;
 import com.sprint.model.ModelView;
 import com.sprint.model.JsonResponse;
 import com.sprint.model.MultipartFile;
@@ -30,6 +31,7 @@ import com.sprint.util.PackageScanner;
 import com.sprint.util.PathPattern;
 import com.sprint.util.EntityBinder;
 import com.sprint.util.MultipartRequestHandler;
+import com.sprint.util.SessionManager;
 
 @WebServlet("/")
 @MultipartConfig(
@@ -263,6 +265,9 @@ public class FrontServlet extends HttpServlet {
                 }
             }
             
+            // Copier les données de session dans les attributs de requête pour la vue
+            SessionManager.copyToRequestAttributes(req);
+            
             // Forward vers la vue JSP
             String viewPath = "/WEB-INF/views/" + modelView.getView() + ".jsp";
             RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
@@ -495,6 +500,20 @@ public class FrontServlet extends HttpServlet {
                         // Valeur par défaut pour les types primitifs
                         args[i] = getDefaultValue(paramType);
                     }
+                }
+                // 5. CAS SPRINT 11: Gestion des sessions Map avec @Session
+                else if (param.isAnnotationPresent(Session.class) || paramType == Map.class) {
+                    Session sessionAnnotation = param.getAnnotation(Session.class);
+                    String sessionName = "default";
+                    boolean create = true;
+                    
+                    if (sessionAnnotation != null) {
+                        sessionName = sessionAnnotation.value();
+                        create = sessionAnnotation.create();
+                    }
+                    
+                    args[i] = SessionManager.getSession(req, sessionName, create);
+                    System.out.println(" Session Map bindée: " + sessionName + " -> " + args[i]);
                 }
                 // 5. Si aucun cas ne correspond et que ce n'est pas une entity
                 else {
