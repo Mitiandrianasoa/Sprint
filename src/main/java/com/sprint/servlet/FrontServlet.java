@@ -32,6 +32,8 @@ import com.sprint.util.PathPattern;
 import com.sprint.util.EntityBinder;
 import com.sprint.util.MultipartRequestHandler;
 import com.sprint.util.SessionManager;
+import com.sprint.security.SecurityInterceptor;
+import com.sprint.model.UserSession;
 
 @WebServlet("/")
 @MultipartConfig(
@@ -218,13 +220,25 @@ public class FrontServlet extends HttpServlet {
                 }
             );
 
-            // 2. Extraire les arguments (avec support des fichiers)
+            // 2. Récupérer la session pour la vérification de sécurité
+            Map<String, Object> session = SessionManager.getSession(req);
+            UserSession userSession = UserSession.fromSessionMap(session);
+
+            // 3. Vérification de sécurité (Sprint 11 bis)
+            Object securityResult = SecurityInterceptor.checkSecurity(method, userSession, session, req, resp);
+            if (securityResult != null) {
+                // La sécurité a bloqué l'accès, traiter le résultat de sécurité
+                traiterResultat(securityResult, req, resp, method, controller);
+                return true;
+            }
+
+            // 4. Extraire les arguments (avec support des fichiers)
             Object[] args = extraireArguments(method, path, req, resp);
 
-            // 3. Appeler la méthode du contrôleur
+            // 5. Appeler la méthode du contrôleur
             Object result = method.invoke(controller, args);
 
-            // 4. Traiter le résultat avec les informations du contrôleur
+            // 6. Traiter le résultat avec les informations du contrôleur
             traiterResultat(result, req, resp, method, controller);
             return true;
 
