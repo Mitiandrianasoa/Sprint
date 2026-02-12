@@ -10,6 +10,7 @@ import java.util.Map;
 
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -22,13 +23,24 @@ import com.sprint.annotation.Post;
 import com.sprint.annotation.RestController;
 import com.sprint.annotation.ResponseBody;
 import com.sprint.annotation.RequestParam;
+import com.sprint.annotation.Session;
 import com.sprint.model.ModelView;
 import com.sprint.model.JsonResponse;
+import com.sprint.model.MultipartFile;
 import com.sprint.util.PackageScanner;
 import com.sprint.util.PathPattern;
 import com.sprint.util.EntityBinder;
+import com.sprint.util.MultipartRequestHandler;
+import com.sprint.util.SessionManager;
+import com.sprint.security.SecurityInterceptor;
+import com.sprint.model.UserSession;
 
 @WebServlet("/")
+@MultipartConfig(
+    maxFileSize = 1024 * 1024 * 10,      // 10MB max file size
+    maxRequestSize = 1024 * 1024 * 50,   // 50MB max request size
+    fileSizeThreshold = 1024 * 1024      // 1MB memory threshold
+)
 public class FrontServlet extends HttpServlet {
     private Map<String, Method> routeMap = new HashMap<>();
     private Map<Method, Object> controllerInstances = new HashMap<>();
@@ -208,13 +220,25 @@ public class FrontServlet extends HttpServlet {
                 }
             );
 
-            // 2. Extraire les arguments
+            // 2. Récupérer la session pour la vérification de sécurité
+            Map<String, Object> session = SessionManager.getSession(req);
+            UserSession userSession = UserSession.fromSessionMap(session);
+
+            // 3. Vérification de sécurité (Sprint 11 bis)
+            Object securityResult = SecurityInterceptor.checkSecurity(method, userSession, session, req, resp);
+            if (securityResult != null) {
+                // La sécurité a bloqué l'accès, traiter le résultat de sécurité
+                traiterResultat(securityResult, req, resp, method, controller);
+                return true;
+            }
+
+            // 4. Extraire les arguments (avec support des fichiers)
             Object[] args = extraireArguments(method, path, req, resp);
 
-            // 3. Appeler la méthode du contrôleur
+            // 5. Appeler la méthode du contrôleur
             Object result = method.invoke(controller, args);
 
-            // 4. Traiter le résultat avec les informations du contrôleur
+            // 6. Traiter le résultat avec les informations du contrôleur
             traiterResultat(result, req, resp, method, controller);
             return true;
 
@@ -255,6 +279,9 @@ public class FrontServlet extends HttpServlet {
                 }
             }
             
+            // Copier les données de session dans les attributs de requête pour la vue
+            SessionManager.copyToRequestAttributes(req);
+            
             // Forward vers la vue JSP
             String viewPath = "/WEB-INF/views/" + modelView.getView() + ".jsp";
             RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
@@ -291,7 +318,8 @@ public class FrontServlet extends HttpServlet {
         boolean returnsObject = !EntityBinder.isSimpleType(returnType) && 
                               !returnType.isPrimitive() && 
                               returnType != String.class && 
-                              returnType != ModelView.class;
+                              returnType != ModelView.class &&
+                              returnType != MultipartFile.class;
         
         return isRestController || hasResponseBody || returnsJsonResponse || returnsObject;
     }
@@ -380,11 +408,44 @@ public class FrontServlet extends HttpServlet {
         String urlPattern = testAnnotation != null ? testAnnotation.value() : "";
         Map<String, String> pathParams = extraireParametresChemin(urlPattern, path);
         
+        // Vérifier si c'est une requête multipart
+        boolean isMultipartRequest = MultipartRequestHandler.isMultipartRequest(req);
+        
+        // Extraire les fichiers si c'est une requête multipart
+        Map<String, MultipartFile> multipartFiles = new HashMap<>();
+        if (isMultipartRequest) {
+            try {
+                multipartFiles = MultipartRequestHandler.extractMultipartFiles(req);
+                System.out.println("📁 Requête multipart détectée. Fichiers: " + multipartFiles.size());
+            } catch (Exception e) {
+                System.err.println("❌ Erreur lors de l'extraction des fichiers: " + e.getMessage());
+            }
+        }
+        
         for (int i = 0; i < parameters.length; i++) {
             Parameter param = parameters[i];
             Class<?> paramType = param.getType();
             
             try {
+                // CAS SPRINT 10: Gestion des fichiers MultipartFile
+                if (paramType == MultipartFile.class) {
+                    if (isMultipartRequest) {
+                        // Rechercher le fichier par le nom du paramètre
+                        String paramName = param.getName();
+                        if (param.isAnnotationPresent(RequestParam.class)) {
+                            RequestParam requestParam = param.getAnnotation(RequestParam.class);
+                            paramName = requestParam.value().isEmpty() ? param.getName() : requestParam.value();
+                        }
+                        
+                        args[i] = multipartFiles.get(paramName);
+                        if (args[i] != null) {
+                            System.out.println("✅ Fichier bindé: " + paramName + " -> " + 
+                                            ((MultipartFile) args[i]).getOriginalFilename());
+                        }
+                    }
+                    continue;
+                }
+                
                 if (EntityBinder.isEntity(paramType)) {
                     System.out.println("🔍 Entity détectée: " + paramType.getSimpleName());
                     args[i] = EntityBinder.bindEntity(req, paramType);
@@ -396,8 +457,24 @@ public class FrontServlet extends HttpServlet {
                     RequestParam requestParam = param.getAnnotation(RequestParam.class);
                     String paramName = requestParam.value().isEmpty() ? param.getName() : requestParam.value();
                     
-                    // Vérifier d'abord dans les paramètres de chemin, puis dans les paramètres de requête
-                    String paramValue = pathParams.getOrDefault(paramName, req.getParameter(paramName));
+                    String paramValue = null;
+                    
+                    // Vérifier d'abord dans les paramètres de chemin
+                    if (pathParams.containsKey(paramName)) {
+                        paramValue = pathParams.get(paramName);
+                    }
+                    // Sinon vérifier dans les paramètres de requête
+                    else if (isMultipartRequest) {
+                        // Pour les requêtes multipart, extraire les paramètres textuels
+                        try {
+                            Map<String, String> multipartParams = MultipartRequestHandler.extractMultipartParameters(req);
+                            paramValue = multipartParams.get(paramName);
+                        } catch (Exception e) {
+                            paramValue = req.getParameter(paramName);
+                        }
+                    } else {
+                        paramValue = req.getParameter(paramName);
+                    }
                     
                     if (paramValue == null && requestParam.required()) {
                         throw new IllegalArgumentException("Paramètre requis manquant: " + paramName);
@@ -418,13 +495,39 @@ public class FrontServlet extends HttpServlet {
                 }
                 // 4. Gestion des paramètres de requête sans annotation (par nom de paramètre)
                 else if (EntityBinder.isSimpleType(paramType)) {
-                    String paramValue = req.getParameter(param.getName());
+                    String paramValue = null;
+                    
+                    if (isMultipartRequest) {
+                        try {
+                            Map<String, String> multipartParams = MultipartRequestHandler.extractMultipartParameters(req);
+                            paramValue = multipartParams.get(param.getName());
+                        } catch (Exception e) {
+                            paramValue = req.getParameter(param.getName());
+                        }
+                    } else {
+                        paramValue = req.getParameter(param.getName());
+                    }
+                    
                     if (paramValue != null) {
                         args[i] = convertToType(paramValue, paramType);
                     } else if (paramType.isPrimitive()) {
                         // Valeur par défaut pour les types primitifs
                         args[i] = getDefaultValue(paramType);
                     }
+                }
+                // 5. CAS SPRINT 11: Gestion des sessions Map avec @Session
+                else if (param.isAnnotationPresent(Session.class) || paramType == Map.class) {
+                    Session sessionAnnotation = param.getAnnotation(Session.class);
+                    String sessionName = "default";
+                    boolean create = true;
+                    
+                    if (sessionAnnotation != null) {
+                        sessionName = sessionAnnotation.value();
+                        create = sessionAnnotation.create();
+                    }
+                    
+                    args[i] = SessionManager.getSession(req, sessionName, create);
+                    System.out.println(" Session Map bindée: " + sessionName + " -> " + args[i]);
                 }
                 // 5. Si aucun cas ne correspond et que ce n'est pas une entity
                 else {
