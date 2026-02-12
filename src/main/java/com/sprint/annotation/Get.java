@@ -6,7 +6,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Annotation pour mapper les requêtes HTTP GET aux méthodes de contrôleur.
+ *--- Annotation pour mapper les requêtes HTTP GET aux méthodes de contrôleur.
  * C'est une version spécialisée de l'annotation @Test pour les requêtes GET.
  * Exemple d'utilisation :
  * - @Get("/users")
